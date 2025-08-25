@@ -2,7 +2,7 @@ import os
 import time
 import logging
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -16,9 +16,6 @@ from selenium.common.exceptions import (
     NoSuchElementException,
     NoSuchWindowException,
 )
-
-# Voor lokaal: automatische driver download
-from webdriver_manager.chrome import ChromeDriverManager
 
 from config import (
     Config,
@@ -42,9 +39,9 @@ class AIBVBookingBot:
     # ---------------- Driver ----------------
     def setup_driver(self):
         """
-        Start een Chrome-driver.
-        - Lokaal: gebruikt webdriver_manager.
-        - Heroku: gebruikt CHROMEDRIVER_PATH/GOOGLE_CHROME_BIN indien aanwezig.
+        Start ChromeDriver.
+        - Op Heroku: gebruikt GOOGLE_CHROME_BIN + CHROMEDRIVER_PATH (altijd matching versie).
+        - Lokaal: valt terug op webdriver_manager.
         """
         opts = ChromeOptions()
 
@@ -68,15 +65,16 @@ class AIBVBookingBot:
         }
         opts.add_experimental_option("prefs", prefs)
 
-        chrome_bin = os.environ.get("GOOGLE_CHROME_BIN") or os.environ.get("CHROME_BIN")
+        chrome_bin = os.environ.get("GOOGLE_CHROME_BIN")
         driver_path = os.environ.get("CHROMEDRIVER_PATH")
 
-        if chrome_bin:
+        if chrome_bin and driver_path:
+            # ✅ Heroku: gebruik buildpack binaries
             opts.binary_location = chrome_bin
-
-        if driver_path and os.path.exists(driver_path):
             service = ChromeService(executable_path=driver_path)
         else:
+            # ✅ Lokaal fallback
+            from webdriver_manager.chrome import ChromeDriverManager
             service = ChromeService(ChromeDriverManager().install())
 
         self.driver = webdriver.Chrome(service=service, options=opts)
@@ -194,7 +192,6 @@ class AIBVBookingBot:
         self.click_by_id("MainContent_cmdZoeken")
         self.click_by_id("MainContent_cmdReservatieMaken")
         self.click_by_id("MainContent_cmdVolgendeStap1")
-        # kies radiobutton jaarlijkse keuring
         self.driver.find_element(By.ID, AIBV_JAARLIJKS_RADIO_ID).click()
         self.click_by_id("MainContent_btnBevestig")
         return True
@@ -208,7 +205,7 @@ class AIBVBookingBot:
         self.filters_initialized = True
         return True
 
-    # ---------------- Week & Slots ----------------
+    # ---------------- Slots ----------------
     def _select_week_value(self, wanted_value: str) -> bool:
         dd = WebDriverWait(self.driver, 10).until(
             EC.presence_of_element_located((By.ID, "MainContent_lbSelectWeek"))
