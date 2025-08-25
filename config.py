@@ -4,67 +4,66 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ---------------- Telegram ----------------
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+TELEGRAM_CHAT_IDS = [
+    cid.strip()
+    for cid in os.environ.get("TELEGRAM_CHAT_IDS", "").split(",")
+    if cid.strip()
+]
+
+# ---------------- AIBV ----------------
+LOGIN_URL = "https://planning.aibv.be/Reservaties/Login.aspx"
+AIBV_USERNAME = os.environ.get("AIBV_USERNAME", "")
+AIBV_PASSWORD = os.environ.get("AIBV_PASSWORD", "")
+
+# ID van de radiobutton voor jaarlijkse/periodieke keuring
+# ⚠️ controleer of dit ID klopt in de HTML van de keuringstypepagina
+AIBV_JAARLIJKS_RADIO_ID = "MainContent_f3516e7a-4a45-4df8-8043-643923a65495"
+
+# Station-ID (numeriek suffix uit de HTML)
+STATION_ID = int(os.environ.get("STATION_ID", "0"))
+
+# ---------------- Behavior ----------------
+# Op Heroku altijd headless (TEST_MODE wordt geforceerd op False)
+IS_HEROKU = bool(os.environ.get("GOOGLE_CHROME_BIN"))
+TEST_MODE = os.environ.get("TEST_MODE", "true").lower() == "true"
+if IS_HEROKU:
+    TEST_MODE = False
+
+BOOKING_ENABLED = os.environ.get("BOOKING_ENABLED", "false").lower() == "true"
+
+# Refresh loop instellingen
+REFRESH_DELAY = int(os.environ.get("REFRESH_DELAY", "15"))  # seconden
+MONITOR_MAX_SECONDS = int(os.environ.get("MONITOR_MAX_SECONDS", "3600"))  # max 1 uur
+POSTBACK_TIMEOUT = 20
+
+# ---------------- Helpers ----------------
 WEEKDAY_NAMES_NL = ["ma", "di", "wo", "do", "vr", "za", "zo"]
 
-def business_days_from_today(n: int) -> datetime:
-    """Return datetime voor 'n' werkdagen vanaf vandaag (excl. weekend)."""
-    d = datetime.now()
-    added = 0
-    while added < n:
-        d += timedelta(days=1)
-        if d.weekday() < 5:
-            added += 1
-    return d
 
-def is_within_n_business_days(date_obj: datetime, n: int) -> bool:
-    """Check of date_obj binnen n werkdagen vanaf vandaag ligt."""
-    target = business_days_from_today(n)
-    return date_obj.date() <= target.date()
+def get_tomorrow_week_monday_str():
+    """Return de 'week value' string van maandag van de week van morgen."""
+    today = datetime.now()
+    tomorrow = today + timedelta(days=1)
+    monday = tomorrow - timedelta(days=tomorrow.weekday())
+    return monday.strftime("%d/%m/%Y")
 
-def get_next_monday_if_weekend(dt: datetime) -> datetime:
-    """Als dt in weekend valt, geef volgende maandag; anders onveranderd."""
-    if dt.weekday() >= 5:  # 5=za, 6=zo
-        return dt + timedelta(days=(7 - dt.weekday()))
-    return dt
 
-class Config:
-    # Telegram
-    TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+def is_within_n_business_days(dt: datetime, n: int) -> bool:
+    """Controleer of datetime dt binnen n werkdagen vanaf nu valt."""
+    now = datetime.now()
+    days = 0
+    current = now
+    while days < n:
+        current += timedelta(days=1)
+        if current.weekday() < 5:  # ma-vr
+            days += 1
+    return dt <= current
 
-    # AIBV login
-    AIBV_USERNAME = os.environ.get("AIBV_USERNAME", "")
-    AIBV_PASSWORD = os.environ.get("AIBV_PASSWORD", "")
-    LOGIN_URL = os.environ.get(
-        "LOGIN_URL",
-        "https://planning.aibv.be/Login.aspx?ReturnUrl=%2fIndex.aspx%3flang%3dnl",
-    )
 
-    # Station
-    STATION_ID = os.environ.get("STATION_ID", "8")  # index van radiobutton
-
-    # Monitoring & timeouts
-    REFRESH_DELAY = int(os.environ.get("REFRESH_DELAY", "15"))
-    POSTBACK_TIMEOUT = int(os.environ.get("POSTBACK_TIMEOUT", "20"))
-    MONITOR_MAX_SECONDS = int(os.environ.get("MONITOR_MAX_SECONDS", "3600"))
-
-    # Omgeving
-    TEST_MODE = os.environ.get("TEST_MODE", "true").lower() == "true"
-    BOOKING_ENABLED = os.environ.get("BOOKING_ENABLED", "false").lower() == "true"
-
-    @staticmethod
-    def get_tomorrow_week_monday_str():
-        """Maandag (dd/mm/YYYY) van de week waarin morgen valt."""
-        tomorrow = datetime.now() + timedelta(days=1)
-        monday = get_next_monday_if_weekend(tomorrow)
-        monday = monday - timedelta(days=monday.weekday())  # normaliseer naar maandag
-        return monday.strftime("%d/%m/%Y")
-
-# ✅ meerdere chat IDs toegestaan (komma-gescheiden string in Heroku config)
-TELEGRAM_CHAT_IDS = os.environ.get("TELEGRAM_CHAT_IDS", "")
-TELEGRAM_CHAT_IDS = [cid.strip() for cid in TELEGRAM_CHAT_IDS.split(",") if cid.strip()]
-
-# Radiobutton-id voor jaarlijkse keuring
-AIBV_JAARLIJKS_RADIO_ID = os.environ.get(
-    "AIBV_JAARLIJKS_RADIO_ID",
-    "MainContent_f3516e7a-4a45-4df8-8043-643923a65495",
+# Debug output bij start
+print(
+    f"[CONFIG] TEST_MODE={TEST_MODE} BOOKING_ENABLED={BOOKING_ENABLED} "
+    f"STATION_ID={STATION_ID} TELEGRAM_CHAT_IDS={TELEGRAM_CHAT_IDS}"
 )

@@ -9,34 +9,39 @@ from config import Config, TELEGRAM_CHAT_IDS
 from selenium_controller import AIBVBookingBot
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-log = logging.getLogger("TG-MON")
+log = logging.getLogger("TG-MONITOR")
 
 HELP = (
     "Monitor bot:\n"
     "/monitor <nummerplaat>|<dd/mm/jjjj> – start monitoring (geen boeking)\n"
     "/stop    – stop monitoring\n"
-    "/help    – hulp\n"
+    "/help    – toon hulp\n"
     "/whoami  – toon jouw chat ID\n"
 )
 
 active_tasks: Dict[int, asyncio.Task] = {}
 Config.STOP_FLAG = False
 
+
 def is_authorized(update: Update) -> bool:
     return str(update.effective_chat.id) in TELEGRAM_CHAT_IDS
+
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
     await update.message.reply_text("👋 AIBV Jaarlijks Monitor klaar.\n" + HELP)
 
+
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
     await update.message.reply_text(HELP)
 
+
 async def whoami_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Jouw chat ID is: {update.effective_chat.id}")
+
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
@@ -48,13 +53,12 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("ℹ️ Geen actieve monitoring.")
 
+
 async def monitor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
 
     chat_id = update.effective_chat.id
-    if not context.args:
-        return await update.message.reply_text("Gebruik: /monitor <nummerplaat>|<dd/mm/jjjj>")
 
     raw_arg = " ".join(context.args).strip()
     if "|" not in raw_arg:
@@ -66,38 +70,25 @@ async def monitor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async def runner():
         bot = AIBVBookingBot()
-        def notify(text: str):
-            asyncio.create_task(context.bot.send_message(chat_id=chat_id, text=text))
+        bot.notify_func = lambda msg: asyncio.create_task(
+            context.bot.send_message(chat_id=chat_id, text=msg)
+        )
         try:
-            bot.set_notifier(notify)
-
-            await context.bot.send_message(chat_id=chat_id, text="🧰 Driver starten…")
             bot.setup_driver()
-            await context.bot.send_message(chat_id=chat_id, text="✅ Driver klaar.")
-
-            await context.bot.send_message(chat_id=chat_id, text="🔐 Inloggen…")
             bot.login()
-            await context.bot.send_message(chat_id=chat_id, text="✅ Ingelogd.")
-
-            await context.bot.send_message(chat_id=chat_id, text="🚗 Voertuig & keuringstype…")
-            bot.select_eu_vehicle(plate, first_reg_date)
-            await context.bot.send_message(chat_id=chat_id, text="✅ Voertuig bevestigd.")
-
-            await context.bot.send_message(chat_id=chat_id, text="🏢 Station kiezen…")
+            bot.select_vehicle(plate, first_reg_date)
             bot.select_station()
-            await context.bot.send_message(chat_id=chat_id, text="✅ Station klaar.")
 
-            # Monitoring maar geen boeking erzef → forceren indien nodig
-            orig = Config.BOOKING_ENABLED
-            Config.BOOKING_ENABLED = False
-            result = bot.monitor_and_book()
-            Config.BOOKING_ENABLED = orig
-
-            if result.get("success"):
-                await context.bot.send_message(chat_id=chat_id, text=f"✅ Slot gevonden: {result.get('slot')} (niet geboekt).")
-            else:
-                await context.bot.send_message(chat_id=chat_id, text=f"❌ Niet gelukt: {result.get('error')}")
-
+            start = asyncio.get_event_loop().time()
+            while not Config.STOP_FLAG and (asyncio.get_event_loop().time() - start) < Config.MONITOR_MAX_SECONDS:
+                best = bot.find_earliest_within_3_business_days()
+                if best:
+                    dt, _, label = best
+                    await context.bot.send_message(chat_id=chat_id, text=f"✅ Slot gevonden: {label}")
+                    break
+                bot.driver.refresh()
+                bot.wait_dom_idle()
+                await asyncio.sleep(Config.REFRESH_DELAY)
         except Exception as e:
             log.exception("Fout in monitor-runner")
             await context.bot.send_message(chat_id=chat_id, text=f"⚠️ Fout: {e}")
@@ -105,6 +96,7 @@ async def monitor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bot.close()
 
     active_tasks[chat_id] = asyncio.create_task(runner())
+
 
 def main():
     app = ApplicationBuilder().token(Config.TELEGRAM_TOKEN).rate_limiter(AIORateLimiter()).build()
@@ -114,6 +106,7 @@ def main():
     app.add_handler(CommandHandler("stop", stop_cmd))
     app.add_handler(CommandHandler("monitor", monitor_cmd))
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
