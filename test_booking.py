@@ -1,4 +1,3 @@
-import os
 from selenium_controller import AIBVBookingBot
 from config import Config
 
@@ -10,8 +9,8 @@ def main():
         bot.login()
         bot.select_eu_vehicle()
         bot.select_station()
-        result = bot.monitor_and_book()
-        print(result)
+        ok = bot.monitor_and_book()  # blijft refreshen tot slot, dan boeken (indien BOOKING_ENABLED=true)
+        print("Resultaat:", "✅ gelukt" if ok else "❌ niet gelukt")
     finally:
         bot.close()
 

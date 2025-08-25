@@ -29,21 +29,24 @@ def get_next_monday_if_weekend(dt: datetime) -> datetime:
 
 class Config:
     # Telegram
-    TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "dummy_token")
-    TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "dummy_chat_id")
+    TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+    TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
     # AIBV login
-    AIBV_USERNAME = os.environ.get("AIBV_USERNAME", "razrou@outlook.be")
-    AIBV_PASSWORD = os.environ.get("AIBV_PASSWORD", "Jackiechan4!")
-    LOGIN_URL = "https://planning.aibv.be/Login.aspx?ReturnUrl=%2fIndex.aspx%3flang%3dnl"
+    AIBV_USERNAME = os.environ.get("AIBV_USERNAME", "")
+    AIBV_PASSWORD = os.environ.get("AIBV_PASSWORD", "")
+    LOGIN_URL = os.environ.get(
+        "LOGIN_URL",
+        "https://planning.aibv.be/Login.aspx?ReturnUrl=%2fIndex.aspx%3flang%3dnl",
+    )
 
     # Station
-    STATION_ID = os.environ.get("STATION_ID", "8")  # bv. '8' = Montignies-sur-Sambre
-    STATION_NAME = "Montignies-sur-Sambre"
+    STATION_ID = os.environ.get("STATION_ID", "8")  # index van radiobutton
+    STATION_NAME = os.environ.get("STATION_NAME", "Montignies-sur-Sambre")
 
     # Monitoring & timeouts
-    REFRESH_DELAY = int(os.environ.get("REFRESH_DELAY", "2"))
-    POSTBACK_TIMEOUT = int(os.environ.get("POSTBACK_TIMEOUT", "15"))
+    REFRESH_DELAY = int(os.environ.get("REFRESH_DELAY", "15"))
+    POSTBACK_TIMEOUT = int(os.environ.get("POSTBACK_TIMEOUT", "20"))
     MONITOR_MAX_SECONDS = int(os.environ.get("MONITOR_MAX_SECONDS", "3600"))
 
     # Omgeving
@@ -64,7 +67,7 @@ AIBV_PLATE = os.environ.get("AIBV_PLATE", "").strip()
 AIBV_FIRST_REG_DATE = os.environ.get("AIBV_FIRST_REG_DATE", "").strip()  # dd/mm/jjjj
 AIBV_JAARLIJKS_RADIO_ID = os.environ.get(
     "AIBV_JAARLIJKS_RADIO_ID",
-    "MainContent_f3516e7a-4a45-4df8-8043-643923a65495"
+    "MainContent_f3516e7a-4a45-4df8-8043-643923a65495",
 )
 
 if __name__ == "__main__":
