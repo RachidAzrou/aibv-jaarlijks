@@ -13,7 +13,7 @@ log = logging.getLogger("TG")
 
 HELP = (
     "AIBV-jaarlijks bot:\n"
-    "/book <nummerplaat> <dd/mm/jjjj> – start flow\n"
+    "/book <nummerplaat>|<dd/mm/jjjj> – start flow\n"
     "/stop  – stop de huidige run\n"
     "/help  – toon deze hulp\n"
     "/whoami – toon jouw chat ID\n"
@@ -55,11 +55,16 @@ async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
 
     chat_id = update.effective_chat.id
-    args = context.args
-    if len(args) < 2:
-        return await update.message.reply_text("Gebruik: /book <nummerplaat> <dd/mm/jjjj>")
 
-    plate, first_reg_date = args[0], args[1]
+    if not context.args:
+        return await update.message.reply_text("Gebruik: /book <nummerplaat>|<dd/mm/jjjj>")
+
+    raw_arg = " ".join(context.args).strip()
+    if "|" not in raw_arg:
+        return await update.message.reply_text("Gebruik: /book <nummerplaat>|<dd/mm/jjjj>")
+
+    plate, first_reg_date = [x.strip() for x in raw_arg.split("|", 1)]
+
     await update.message.reply_text(f"🚀 Start flow voor {plate} ({first_reg_date})…")
 
     async def runner():
