@@ -5,7 +5,7 @@ from typing import Dict
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, AIORateLimiter
 
-from config import Config
+from config import Config, TELEGRAM_CHAT_IDS
 from selenium_controller import AIBVBookingBot
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -16,14 +16,15 @@ HELP = (
     "/monitor <nummerplaat> <dd/mm/jjjj> – start monitoring (geen boeking)\n"
     "/stop    – stop monitoring\n"
     "/help    – toon hulp\n"
+    "/whoami  – toon jouw chat ID\n"
 )
 
 active_tasks: Dict[int, asyncio.Task] = {}
 Config.STOP_FLAG = False
 
-# ✅ security check
+# ✅ meerdere toegestane chat IDs
 def is_authorized(update: Update) -> bool:
-    return str(update.effective_chat.id) == str(Config.TELEGRAM_CHAT_ID)
+    return str(update.effective_chat.id) in TELEGRAM_CHAT_IDS
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
@@ -34,6 +35,10 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
     await update.message.reply_text(HELP)
+
+async def whoami_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Deze mag iedereen gebruiken om zijn ID te zien
+    await update.message.reply_text(f"Jouw chat ID is: {update.effective_chat.id}")
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
@@ -87,6 +92,7 @@ def main():
     app = ApplicationBuilder().token(Config.TELEGRAM_TOKEN).rate_limiter(AIORateLimiter()).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("whoami", whoami_cmd))
     app.add_handler(CommandHandler("stop", stop_cmd))
     app.add_handler(CommandHandler("monitor", monitor_cmd))
     app.run_polling()

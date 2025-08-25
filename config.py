@@ -59,6 +59,10 @@ class Config:
         monday = monday - timedelta(days=monday.weekday())  # normaliseer naar maandag
         return monday.strftime("%d/%m/%Y")
 
+# ✅ meerdere chat IDs toegestaan (komma-gescheiden string in Heroku config)
+TELEGRAM_CHAT_IDS = os.environ.get("TELEGRAM_CHAT_IDS", "")
+TELEGRAM_CHAT_IDS = [cid.strip() for cid in TELEGRAM_CHAT_IDS.split(",") if cid.strip()]
+
 # Radiobutton-id voor jaarlijkse keuring
 AIBV_JAARLIJKS_RADIO_ID = os.environ.get(
     "AIBV_JAARLIJKS_RADIO_ID",
