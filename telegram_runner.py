@@ -21,13 +21,23 @@ HELP = (
 active_tasks: Dict[int, asyncio.Task] = {}
 Config.STOP_FLAG = False
 
+# ✅ security check
+def is_authorized(update: Update) -> bool:
+    return str(update.effective_chat.id) == str(Config.TELEGRAM_CHAT_ID)
+
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update):
+        return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
     await update.message.reply_text("👋 Bot klaar.\n" + HELP)
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update):
+        return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
     await update.message.reply_text(HELP)
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update):
+        return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
     Config.STOP_FLAG = True
     task = active_tasks.get(update.effective_chat.id)
     if task and not task.done():
@@ -36,6 +46,9 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("ℹ️ Geen actieve run.")
 
 async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update):
+        return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
+
     chat_id = update.effective_chat.id
     args = context.args
     if len(args) < 2:

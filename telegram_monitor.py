@@ -13,7 +13,7 @@ log = logging.getLogger("TG-MON")
 
 HELP = (
     "Monitor bot:\n"
-    "/monitor – start monitoring (geen boeking)\n"
+    "/monitor <nummerplaat> <dd/mm/jjjj> – start monitoring (geen boeking)\n"
     "/stop    – stop monitoring\n"
     "/help    – toon hulp\n"
 )
@@ -21,13 +21,23 @@ HELP = (
 active_tasks: Dict[int, asyncio.Task] = {}
 Config.STOP_FLAG = False
 
+# ✅ security check
+def is_authorized(update: Update) -> bool:
+    return str(update.effective_chat.id) == str(Config.TELEGRAM_CHAT_ID)
+
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update):
+        return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
     await update.message.reply_text("👋 AIBV Jaarlijks Monitor klaar.\n" + HELP)
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update):
+        return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
     await update.message.reply_text(HELP)
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_authorized(update):
+        return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
     Config.STOP_FLAG = True
     task = active_tasks.get(update.effective_chat.id)
     if task and not task.done():
@@ -36,20 +46,23 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("ℹ️ Geen actieve monitoring.")
 
 async def monitor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    task = active_tasks.get(chat_id)
-    if task and not task.done():
-        return await update.message.reply_text("⏳ Er loopt al monitoring. Gebruik /stop of wacht.")
+    if not is_authorized(update):
+        return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
 
-    Config.STOP_FLAG = False
-    await update.message.reply_text("🔍 Start monitoring (meldt zodra er een slot is)…")
+    chat_id = update.effective_chat.id
+    args = context.args
+    if len(args) < 2:
+        return await update.message.reply_text("Gebruik: /monitor <nummerplaat> <dd/mm/jjjj>")
+
+    plate, first_reg_date = args[0], args[1]
+    await update.message.reply_text(f"🔍 Start monitoring voor {plate} ({first_reg_date})…")
 
     async def runner():
         bot = AIBVBookingBot()
         try:
             bot.setup_driver()
             bot.login()
-            bot.select_eu_vehicle()
+            bot.select_eu_vehicle(plate, first_reg_date)
             bot.select_station()
 
             start = asyncio.get_event_loop().time()
@@ -68,12 +81,9 @@ async def monitor_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         finally:
             bot.close()
 
-    t = asyncio.create_task(runner())
-    active_tasks[chat_id] = t
+    active_tasks[chat_id] = asyncio.create_task(runner())
 
 def main():
-    if not Config.TELEGRAM_TOKEN:
-        raise SystemExit("TELEGRAM_TOKEN ontbreekt in .env")
     app = ApplicationBuilder().token(Config.TELEGRAM_TOKEN).rate_limiter(AIORateLimiter()).build()
     app.add_handler(CommandHandler("start", start_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
