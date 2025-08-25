@@ -1,3 +1,4 @@
+
 import os
 import time
 import logging
@@ -35,13 +36,27 @@ class AIBVBookingBot:
     def __init__(self):
         self.driver = None
         self.filters_initialized = False
+        self._notifier = None  # wordt gezet via set_notifier()
+
+    # ---------- Notifier ----------
+    def set_notifier(self, fn):
+        """fn(text:str) -> None (mag sync zijn)."""
+        self._notifier = fn
+
+    def _notify(self, text: str):
+        try:
+            if self._notifier:
+                self._notifier(text)
+        except Exception:
+            # nooit de flow breken door notify
+            pass
 
     # ---------------- Driver ----------------
     def setup_driver(self):
         """
         Start ChromeDriver.
-        - Op Heroku: gebruikt GOOGLE_CHROME_BIN + CHROMEDRIVER_PATH (altijd matching versie).
-        - Lokaal: valt terug op webdriver_manager.
+        - Op Heroku: gebruikt GOOGLE_CHROME_BIN + CHROMEDRIVER_PATH (matching versie).
+        - Lokaal: fallback via webdriver_manager.
         """
         opts = ChromeOptions()
 
@@ -59,17 +74,14 @@ class AIBVBookingBot:
         opts.add_argument("--disable-renderer-backgrounding")
         opts.add_argument("--disable-background-timer-throttling")
 
-        prefs = {
-            "credentials_enable_service": False,
-            "profile.password_manager_enabled": False,
-        }
+        prefs = {"credentials_enable_service": False, "profile.password_manager_enabled": False}
         opts.add_experimental_option("prefs", prefs)
 
         chrome_bin = os.environ.get("GOOGLE_CHROME_BIN")
         driver_path = os.environ.get("CHROMEDRIVER_PATH")
 
         if chrome_bin and driver_path:
-            # ✅ Heroku: gebruik buildpack binaries
+            # ✅ Heroku: buildpack binaries
             opts.binary_location = chrome_bin
             service = ChromeService(executable_path=driver_path)
         else:
@@ -79,6 +91,7 @@ class AIBVBookingBot:
 
         self.driver = webdriver.Chrome(service=service, options=opts)
         self.driver.set_page_load_timeout(45)
+        self._notify("✅ Chrome driver gestart.")
         return self.driver
 
     # ---------------- Helpers ----------------
@@ -173,6 +186,7 @@ class AIBVBookingBot:
 
     # ---------------- Flow ----------------
     def login(self):
+        self._notify("🔐 Inloggen…")
         d = self.driver
         d.get(Config.LOGIN_URL)
         self.wait_dom_idle()
@@ -182,30 +196,50 @@ class AIBVBookingBot:
         self.click_by_id("Button1")
         self.switch_to_latest_window(timeout=8)
         self.wait_dom_idle()
+        self._notify("✅ Ingelogd.")
         return True
 
     def select_eu_vehicle(self, plate: str, first_reg_date: str):
-        # nummerplaat (zonder streepjes)
-        plate = plate.replace("-", "").strip().upper()
+        self._notify("🚗 Voertuig zoeken op nummerplaat + 1e inschrijving…")
+        # nummerplaat normaliseren: geen streepjes/spaties
+        plate = plate.replace("-", "").replace(" ", "").strip().upper()
+
+        # Zorg dat we op de juiste stap zitten (indien de velden niet zichtbaar zijn, ga naar 'Voertuig toevoegen')
+        try:
+            self.driver.find_element(By.ID, "MainContent_txtPlaat")
+        except NoSuchElementException:
+            try:
+                self.click_by_id("MainContent_btnVoertuigToevoegen")
+            except Exception:
+                pass
+
         self.type_by_id("MainContent_txtPlaat", plate)
         self.type_by_id("MainContent_txtDatumIndienststelling", first_reg_date)
+
+        self._notify("🔎 Zoeken in AIBV database…")
         self.click_by_id("MainContent_cmdZoeken")
+        self._notify("📝 Reservatie aanmaken…")
         self.click_by_id("MainContent_cmdReservatieMaken")
         self.click_by_id("MainContent_cmdVolgendeStap1")
+
+        self._notify("📋 Keuringstype kiezen (periodiek/jaarlijks)…")
         self.driver.find_element(By.ID, AIBV_JAARLIJKS_RADIO_ID).click()
         self.click_by_id("MainContent_btnBevestig")
+        self._notify("✅ Voertuig + keuringstype bevestigd.")
         return True
 
     def select_station(self):
+        self._notify("🏢 Station selecteren…")
         self.click_by_id(f"MainContent_rblStation_{Config.STATION_ID}")
         WebDriverWait(self.driver, 10).until(
             EC.presence_of_element_located((By.ID, "MainContent_lbSelectWeek"))
         )
         self.wait_dom_idle()
         self.filters_initialized = True
+        self._notify("✅ Station & weekselector geladen.")
         return True
 
-    # ---------------- Slots ----------------
+    # ---------------- Week & Slots ----------------
     def _select_week_value(self, wanted_value: str) -> bool:
         dd = WebDriverWait(self.driver, 10).until(
             EC.presence_of_element_located((By.ID, "MainContent_lbSelectWeek"))
@@ -300,6 +334,7 @@ class AIBVBookingBot:
 
     # ---------------- Booking / Monitoring ----------------
     def book_slot(self, radio, human_label: str):
+        self._notify(f"🧾 Slot selecteren & bevestigen: {human_label}")
         try:
             radio.click()
         except StaleElementReferenceException:
@@ -318,32 +353,56 @@ class AIBVBookingBot:
             pass
         self.click_by_id("MainContent_cmdBevestigen")
         log.info(f"🎉 BOEKING: {human_label}")
+        self._notify(f"🎉 Boeking bevestigd: {human_label}")
         return True
 
     def monitor_and_book(self):
         start = time.time()
+        loop_count = 0
+        self._notify(
+            f"🔁 Monitoring gestart: elke {Config.REFRESH_DELAY}s refresh, max {int(Config.MONITOR_MAX_SECONDS/60)} min."
+        )
+
         while True:
             if self._stop_requested():
-                log.info("⏹️ Gestopt door gebruiker (/stop).")
+                msg = "⏹️ Gestopt door gebruiker (/stop)."
+                log.info(msg)
+                self._notify(msg)
                 return {"success": False, "error": "Gestopt via /stop"}
+
             elapsed = time.time() - start
             if elapsed >= Config.MONITOR_MAX_SECONDS:
+                self._notify("⌛ Tijdslimiet bereikt, geen slot gevonden.")
                 return {"success": False, "error": "Geen slot gevonden binnen tijdslimiet."}
+
             try:
                 self.ensure_filters_once()
+
                 found = self.find_earliest_within_3_business_days()
                 if found:
                     dt, radio, label = found
+                    self._notify(f"✅ Slot binnen 3 werkdagen gevonden: {label}")
                     if Config.BOOKING_ENABLED:
+                        self._notify("✍️ Boeken ingeschakeld — poging tot boeken…")
                         self.book_slot(radio, label)
                         return {"success": True, "slot": label}
                     else:
+                        self._notify("ℹ️ BOOKING_ENABLED=false — niet geboekt, alleen gemeld.")
                         return {"success": True, "slot": label, "booking_disabled": True}
+
+                # Geen slot → echte refresh
                 self.driver.refresh()
                 self.wait_dom_idle()
+                loop_count += 1
+                # niet spammen: status elke 5 iteraties
+                if loop_count % 5 == 0:
+                    self._notify("🔄 Nog geen slots… ik blijf refreshen.")
+
                 time.sleep(Config.REFRESH_DELAY)
+
             except Exception as e:
                 log.warning(f"⚠️  Monitoring fout: {e}")
+                self._notify(f"⚠️ Fout tijdens monitoren: {e.__class__.__name__}. Ik herstel en ga door.")
                 self.driver.refresh()
                 self.wait_dom_idle()
                 time.sleep(min(5, Config.REFRESH_DELAY * 2))

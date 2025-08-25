@@ -13,16 +13,15 @@ log = logging.getLogger("TG")
 
 HELP = (
     "AIBV-jaarlijks bot:\n"
-    "/book <nummerplaat>|<dd/mm/jjjj> – start flow\n"
+    "/book <nummerplaat>|<dd/mm/jjjj> – start\n"
     "/stop  – stop de huidige run\n"
-    "/help  – toon deze hulp\n"
+    "/help  – hulp\n"
     "/whoami – toon jouw chat ID\n"
 )
 
 active_tasks: Dict[int, asyncio.Task] = {}
 Config.STOP_FLAG = False
 
-# ✅ meerdere toegestane chat IDs
 def is_authorized(update: Update) -> bool:
     return str(update.effective_chat.id) in TELEGRAM_CHAT_IDS
 
@@ -37,7 +36,6 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP)
 
 async def whoami_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Deze mag iedereen gebruiken om zijn ID te zien
     await update.message.reply_text(f"Jouw chat ID is: {update.effective_chat.id}")
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -69,13 +67,39 @@ async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async def runner():
         bot = AIBVBookingBot()
+        # notifier die vanuit selenium_controller kan berichten
+        def notify(text: str):
+            asyncio.create_task(context.bot.send_message(chat_id=chat_id, text=text))
+
         try:
+            bot.set_notifier(notify)
+            await context.bot.send_message(chat_id=chat_id, text="🧰 Stap 1/5: driver starten…")
             bot.setup_driver()
+            await context.bot.send_message(chat_id=chat_id, text="✅ Driver klaar.")
+
+            await context.bot.send_message(chat_id=chat_id, text="🔐 Stap 2/5: inloggen…")
             bot.login()
+            await context.bot.send_message(chat_id=chat_id, text="✅ Ingelogd.")
+
+            await context.bot.send_message(chat_id=chat_id, text="🚗 Stap 3/5: voertuig & keuringstype…")
             bot.select_eu_vehicle(plate, first_reg_date)
+            await context.bot.send_message(chat_id=chat_id, text="✅ Voertuig bevestigd.")
+
+            await context.bot.send_message(chat_id=chat_id, text="🏢 Stap 4/5: station kiezen…")
             bot.select_station()
+            await context.bot.send_message(chat_id=chat_id, text="✅ Station klaar.")
+
+            await context.bot.send_message(chat_id=chat_id, text="🔁 Stap 5/5: starten met refresh/monitoring…")
             result = bot.monitor_and_book()
-            await context.bot.send_message(chat_id=chat_id, text=f"Resultaat: {'✅ gelukt' if result else '❌ niet gelukt'}")
+
+            if result.get("success"):
+                if result.get("booking_disabled"):
+                    await context.bot.send_message(chat_id=chat_id, text=f"🟡 Slot gevonden maar niet geboekt (BOOKING_ENABLED=false): {result.get('slot')}")
+                else:
+                    await context.bot.send_message(chat_id=chat_id, text=f"🎉 Boeking gelukt: {result.get('slot')}")
+            else:
+                await context.bot.send_message(chat_id=chat_id, text=f"❌ Niet gelukt: {result.get('error')}")
+
         except Exception as e:
             log.exception("Fout in booking runner")
             await context.bot.send_message(chat_id=chat_id, text=f"⚠️ Fout: {e}")
