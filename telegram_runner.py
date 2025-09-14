@@ -26,8 +26,7 @@ HELP = (
 
 active_tasks: Dict[int, asyncio.Task] = {}
 active_status: Dict[int, str] = {}
-Config.STOP_FLAG = False
-
+Config.STOP_FLAG = False  # globale stop-vlag
 
 def is_authorized(update: Update) -> bool:
     return str(update.effective_chat.id) in TELEGRAM_CHAT_IDS
@@ -41,7 +40,7 @@ async def _typing(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 
 
 def make_notifier(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> Callable[[str], None]:
-    """Maakt een notify-functie die sync wordt aangeroepen vanuit Selenium en asynchroon naar Telegram pusht."""
+    """Sync -> async bridge om meldingen vanuit selenium_controller door te sturen naar Telegram."""
     async def send_async(msg: str):
         try:
             await _typing(context, chat_id)
@@ -50,12 +49,12 @@ def make_notifier(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> Callable[
             log.error(f"[notify] Telegram send failed: {e}")
 
     def notify(msg: str):
-        # vanuit sync code → schedule async send
         asyncio.get_event_loop().create_task(send_async(msg))
 
     return notify
 
 
+# ---------------- Commands ----------------
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
@@ -73,9 +72,12 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     running = "🟢 actief" if (t := active_tasks.get(chat_id)) and not t.done() else "⚪️ niet actief"
     step = active_status.get(chat_id, "idle")
     await update.message.reply_text(
-        f"Status: {running}\nStap: {step}\n"
-        f"TEST_MODE={Config.TEST_MODE}  BOOKING_ENABLED={Config.BOOKING_ENABLED}  "
-        f"STATION_ID={Config.STATION_ID}  DESIRED_BD={Config.DESIRED_BUSINESS_DAYS}"
+        f"Status: {running}\n"
+        f"Stap: {step}\n"
+        f"STOP_FLAG={Config.STOP_FLAG}\n"
+        f"TEST_MODE={Config.TEST_MODE}  BOOKING_ENABLED={Config.BOOKING_ENABLED}\n"
+        f"STATION_ID={Config.STATION_ID}  DESIRED_BD={Config.DESIRED_BUSINESS_DAYS}\n"
+        f"(Monitoren heeft GEEN tijdslimiet; stopt alleen bij /stop of bij succes.)"
     )
 
 
@@ -105,14 +107,18 @@ async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     plate, first_reg_date = [x.strip() for x in raw_arg.split("|", 1)]
 
-    # Als er al een run actief is
+    # Reset stop-flag vóór elke nieuwe run (fix voor spook-'/stop')
+    Config.STOP_FLAG = False
+
+    # Eén run tegelijk per chat
     old = active_tasks.get(chat_id)
     if old and not old.done():
         return await update.message.reply_text("⏳ Er draait al een run. Gebruik /stop of wacht tot deze klaar is.")
 
     await update.message.reply_text(
         f"🚀 Start flow voor <b>{plate}</b> ({first_reg_date})…\n"
-        f"TEST_MODE={Config.TEST_MODE}  BOOKING_ENABLED={Config.BOOKING_ENABLED}",
+        f"TEST_MODE={Config.TEST_MODE}  BOOKING_ENABLED={Config.BOOKING_ENABLED}\n"
+        f"(Monitor blijft lopen tot /stop of succes — geen tijdslimiet.)",
         parse_mode="HTML",
     )
 
@@ -121,7 +127,7 @@ async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             active_status[chat_id] = "🔧 Driver initialiseren"
             bot = AIBVBookingBot()
-            bot.notify_func = make_notifier(context, chat_id)  # <<< BELANGRIJK: zet notifier
+            bot.notify_func = make_notifier(context, chat_id)
             bot.setup_driver()
 
             active_status[chat_id] = "🔐 Inloggen"
@@ -138,7 +144,8 @@ async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 chat_id=chat_id,
                 text=(f"🕑 Monitor gestart. Venster: {Config.DESIRED_BUSINESS_DAYS} werkdagen. "
                       f"Refresh elke {Config.REFRESH_DELAY}s. "
-                      f"{'🧪 TEST_MODE: er wordt niet echt geboekt.' if Config.TEST_MODE or not Config.BOOKING_ENABLED else '🟢 Boeken ingeschakeld.'}")
+                      f"{'🧪 TEST_MODE: er wordt niet echt geboekt.' if Config.TEST_MODE or not Config.BOOKING_ENABLED else '🟢 Boeken ingeschakeld.'}\n"
+                      f"⏱️ Geen tijdslimiet: ik zoek door tot /stop of succes.")
             )
 
             result = bot.monitor_and_book()
@@ -169,10 +176,13 @@ async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
+    # Reset stop-flag bij opstart
+    Config.STOP_FLAG = False
     log.info(
         "[CONFIG] TEST_MODE=%s BOOKING_ENABLED=%s STATION_ID=%s TELEGRAM_CHAT_IDS=%s DESIRED_BD=%s",
         Config.TEST_MODE, Config.BOOKING_ENABLED, Config.STATION_ID, TELEGRAM_CHAT_IDS, Config.DESIRED_BUSINESS_DAYS
     )
+
     app = ApplicationBuilder().token(Config.TELEGRAM_TOKEN).rate_limiter(AIORateLimiter()).build()
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("whoami", whoami_cmd))
