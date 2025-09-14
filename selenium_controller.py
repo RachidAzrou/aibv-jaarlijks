@@ -263,7 +263,6 @@ class AIBVBookingBot:
         except Exception:
             return False
 
-    # === Nieuw: doelweek afleiden op basis van venster ===
     def _get_target_week_value(self) -> str:
         try:
             return Config.get_target_window_week_value(Config.DESIRED_BUSINESS_DAYS)
@@ -325,7 +324,6 @@ class AIBVBookingBot:
         slots.sort(key=lambda x: x[0])
         return slots
 
-    # === Aangepast: gebruik Config.DESIRED_BUSINESS_DAYS i.p.v. hardcoded 3
     def find_earliest_within_window(self):
         for dt, radio, label in self._collect_slots():
             if is_within_n_business_days(dt, Config.DESIRED_BUSINESS_DAYS):
@@ -360,9 +358,8 @@ class AIBVBookingBot:
         return True
 
     def monitor_and_book(self):
-        start = time.time()
         LOG_PERIOD = 300
-        next_log_at = start + LOG_PERIOD
+        next_log_at = time.time() + LOG_PERIOD
 
         # 1) Zorg dat filters eenmalig goed staan
         if not self.filters_initialized:
@@ -378,12 +375,6 @@ class AIBVBookingBot:
             if self._stop_requested():
                 self._notify("⏹️ Gestopt via /stop")
                 return {"success": False, "error": "Gestopt via /stop"}
-
-            elapsed = time.time() - start
-            if elapsed >= Config.MONITOR_MAX_SECONDS:
-                mins = Config.MONITOR_MAX_SECONDS // 60
-                self._notify(f"⌛ Geen slot binnen {mins} min")
-                return {"success": False, "error": "Geen slot gevonden"}
 
             try:
                 # Zorg dat de juiste week staat geselecteerd

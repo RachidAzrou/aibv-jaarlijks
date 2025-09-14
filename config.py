@@ -36,12 +36,12 @@ if IS_HEROKU:
 BOOKING_ENABLED = os.environ.get("BOOKING_ENABLED", "false").lower() == "true"
 
 REFRESH_DELAY = int(os.environ.get("REFRESH_DELAY", "15"))  # seconden
-MONITOR_MAX_SECONDS = int(os.environ.get("MONITOR_MAX_SECONDS", "3600"))  # max 1 uur
+# MONITOR_MAX_SECONDS bestond voorheen, maar wordt niet meer gebruikt (oneindig monitoren)
+MONITOR_MAX_SECONDS = int(os.environ.get("MONITOR_MAX_SECONDS", "3600"))
 POSTBACK_TIMEOUT = 20
 
-# Nieuwe: aantal gewenste werkdagen (venster) waarbinnen een slot moet vallen
+# Aantal gewenste werkdagen (venster) waarbinnen een slot moet vallen
 DESIRED_BUSINESS_DAYS = int(os.environ.get("DESIRED_BUSINESS_DAYS", "3"))
-
 
 # ---------------- Helpers ----------------
 def get_tomorrow_week_monday_str():
@@ -64,7 +64,7 @@ def is_within_n_business_days(dt: datetime, n: int) -> bool:
     return dt <= current
 
 
-# === Nieuw: helpers voor doelweek op basis van venster ===
+# === Helpers voor doelweek op basis van venster ===
 def _week_monday(d: datetime) -> datetime:
     """Geef de maandag (00:00) van de week van datum d."""
     return d - timedelta(days=d.weekday())
@@ -117,7 +117,7 @@ class Config:
     TEST_MODE = TEST_MODE
     BOOKING_ENABLED = BOOKING_ENABLED
     REFRESH_DELAY = REFRESH_DELAY
-    MONITOR_MAX_SECONDS = MONITOR_MAX_SECONDS
+    MONITOR_MAX_SECONDS = MONITOR_MAX_SECONDS  # niet meer gebruikt door monitor_loop
     POSTBACK_TIMEOUT = POSTBACK_TIMEOUT
     DESIRED_BUSINESS_DAYS = DESIRED_BUSINESS_DAYS
     STOP_FLAG = False
