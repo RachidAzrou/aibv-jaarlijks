@@ -39,6 +39,9 @@ REFRESH_DELAY = int(os.environ.get("REFRESH_DELAY", "15"))  # seconden
 MONITOR_MAX_SECONDS = int(os.environ.get("MONITOR_MAX_SECONDS", "3600"))  # max 1 uur
 POSTBACK_TIMEOUT = 20
 
+# Nieuwe: aantal gewenste werkdagen (venster) waarbinnen een slot moet vallen
+DESIRED_BUSINESS_DAYS = int(os.environ.get("DESIRED_BUSINESS_DAYS", "3"))
+
 
 # ---------------- Helpers ----------------
 def get_tomorrow_week_monday_str():
@@ -61,6 +64,47 @@ def is_within_n_business_days(dt: datetime, n: int) -> bool:
     return dt <= current
 
 
+# === Nieuw: helpers voor doelweek op basis van venster ===
+def _week_monday(d: datetime) -> datetime:
+    """Geef de maandag (00:00) van de week van datum d."""
+    return d - timedelta(days=d.weekday())
+
+
+def get_week_value_for_date(d: datetime) -> str:
+    """
+    Geeft de dropdown 'value' terug voor de week van datum d.
+    AIBV gebruikt de maandag in formaat 'dd/mm/yyyy' als value.
+    Pas aan als jouw HTML anders is.
+    """
+    monday = _week_monday(d)
+    return monday.strftime("%d/%m/%Y")
+
+
+def get_target_window_week_value(n_business_days: int | None = None) -> str:
+    """
+    Bepaal de week (dropdown value) die de vroegst-mogelijke datum
+    binnen het gewenste business-day-venster bevat.
+    """
+    n = n_business_days or DESIRED_BUSINESS_DAYS
+    # startpunt: morgen
+    d = datetime.now() + timedelta(days=1)
+
+    # Zoek de eerste werkdag in het venster (ma-vr), en neem diens week.
+    count = 0
+    earliest_business_date = None
+    while True:
+        if d.weekday() < 5:  # ma=0..vr=4
+            count += 1
+            if earliest_business_date is None:
+                earliest_business_date = d
+            if count >= n:
+                break
+        d += timedelta(days=1)
+
+    # We nemen de week van de eerste werkdag in het venster
+    return get_week_value_for_date(earliest_business_date)
+
+
 # ---------------- Config Class ----------------
 class Config:
     TELEGRAM_TOKEN = TELEGRAM_TOKEN
@@ -75,14 +119,18 @@ class Config:
     REFRESH_DELAY = REFRESH_DELAY
     MONITOR_MAX_SECONDS = MONITOR_MAX_SECONDS
     POSTBACK_TIMEOUT = POSTBACK_TIMEOUT
+    DESIRED_BUSINESS_DAYS = DESIRED_BUSINESS_DAYS
     STOP_FLAG = False
 
     get_tomorrow_week_monday_str = staticmethod(get_tomorrow_week_monday_str)
     is_within_n_business_days = staticmethod(is_within_n_business_days)
+    get_week_value_for_date = staticmethod(get_week_value_for_date)
+    get_target_window_week_value = staticmethod(get_target_window_week_value)
 
 
 # Debug output bij start
 print(
     f"[CONFIG] TEST_MODE={Config.TEST_MODE} BOOKING_ENABLED={Config.BOOKING_ENABLED} "
-    f"STATION_ID={Config.STATION_ID} TELEGRAM_CHAT_IDS={Config.TELEGRAM_CHAT_IDS}"
+    f"STATION_ID={Config.STATION_ID} TELEGRAM_CHAT_IDS={Config.TELEGRAM_CHAT_IDS} "
+    f"DESIRED_BUSINESS_DAYS={Config.DESIRED_BUSINESS_DAYS}"
 )

@@ -42,7 +42,6 @@ class AIBVBookingBot:
         opts.add_argument("--no-sandbox")
         opts.add_argument("--disable-dev-shm-usage")
         opts.add_argument("--disable-gpu")
-        opts.add_argument("--disable-dev-shm-usage")
         opts.add_argument("--disable-features=VizDisplayCompositor")
         opts.add_argument("--disable-background-timer-throttling")
         opts.add_argument("--disable-renderer-backgrounding")
@@ -53,11 +52,14 @@ class AIBVBookingBot:
         }
         opts.add_experimental_option("prefs", prefs)
 
-        chrome_bin = os.environ.get("GOOGLE_CHROME_BIN")
+        # Heroku/remote of lokaal
+        chrome_bin = os.environ.get("GOOGLE_CHROME_BIN") or os.environ.get("CHROME_BIN")
         driver_path = os.environ.get("CHROMEDRIVER_PATH")
 
-        if chrome_bin and driver_path:
+        if chrome_bin:
             opts.binary_location = chrome_bin
+
+        if driver_path and os.path.exists(driver_path):
             service = ChromeService(executable_path=driver_path)
         else:
             from webdriver_manager.chrome import ChromeDriverManager
@@ -98,6 +100,10 @@ class AIBVBookingBot:
         el = WebDriverWait(self.driver, timeout).until(
             EC.element_to_be_clickable((By.ID, element_id))
         )
+        try:
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+        except Exception:
+            pass
         el.click()
         self.wait_dom_idle()
         return el
@@ -106,8 +112,21 @@ class AIBVBookingBot:
         el = WebDriverWait(self.driver, timeout).until(
             EC.visibility_of_element_located((By.ID, element_id))
         )
+        try:
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", el)
+        except Exception:
+            pass
         el.clear()
         el.send_keys(value)
+        # events triggeren (ASP.NET validators)
+        try:
+            self.driver.execute_script(
+                "var e=document.getElementById(arguments[0]);"
+                "if(e){e.dispatchEvent(new Event('input',{bubbles:true}));"
+                "e.dispatchEvent(new Event('change',{bubbles:true}));}", element_id
+            )
+        except Exception:
+            pass
         return el
 
     # ---------------- Flow ----------------
@@ -183,6 +202,10 @@ class AIBVBookingBot:
         radio = WebDriverWait(self.driver, 10).until(
             EC.presence_of_element_located((By.ID, Config.AIBV_JAARLIJKS_RADIO_ID))
         )
+        try:
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", radio)
+        except Exception:
+            pass
         radio.click()
         self.click_by_id("MainContent_btnBevestig")
         self._notify("✅ Voertuig en keuringstype bevestigd.")
@@ -207,6 +230,10 @@ class AIBVBookingBot:
         sel = Select(dd)
         for opt in sel.options:
             if opt.get_attribute("value") == wanted_value:
+                try:
+                    self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", opt)
+                except Exception:
+                    pass
                 opt.click()
                 self.wait_dom_idle()
                 return True
@@ -223,15 +250,29 @@ class AIBVBookingBot:
     def _ensure_station_selected(self):
         try:
             radio = self.driver.find_element(By.ID, f"MainContent_rblStation_{Config.STATION_ID}")
-            if not radio.is_selected():
+            # Gebruik JS om 'checked' te verifiëren; .is_selected() is niet altijd betrouwbaar op custom radios
+            checked = self.driver.execute_script("return arguments[0].checked === true;", radio)
+            if not checked:
+                try:
+                    self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", radio)
+                except Exception:
+                    pass
                 radio.click()
                 self.wait_dom_idle()
             return True
         except Exception:
             return False
 
+    # === Nieuw: doelweek afleiden op basis van venster ===
+    def _get_target_week_value(self) -> str:
+        try:
+            return Config.get_target_window_week_value(Config.DESIRED_BUSINESS_DAYS)
+        except Exception:
+            # Fallback op bestaand gedrag
+            return Config.get_tomorrow_week_monday_str()
+
     def _ensure_week_selected(self):
-        wanted = Config.get_tomorrow_week_monday_str()
+        wanted = self._get_target_week_value()
         current = self._get_selected_week_value()
         if current == wanted:
             return True
@@ -242,9 +283,10 @@ class AIBVBookingBot:
             WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.ID, "MainContent_lbSelectWeek"))
             )
-            self._ensure_station_selected()
-            self._ensure_week_selected()
-            self.filters_initialized = True
+            ok_station = self._ensure_station_selected()
+            ok_week = self._ensure_week_selected()
+            if ok_station and ok_week:
+                self.filters_initialized = True
         except Exception:
             pass
 
@@ -283,16 +325,27 @@ class AIBVBookingBot:
         slots.sort(key=lambda x: x[0])
         return slots
 
-    def find_earliest_within_3_business_days(self):
+    # === Aangepast: gebruik Config.DESIRED_BUSINESS_DAYS i.p.v. hardcoded 3
+    def find_earliest_within_window(self):
         for dt, radio, label in self._collect_slots():
-            if is_within_n_business_days(dt, 3):
+            if is_within_n_business_days(dt, Config.DESIRED_BUSINESS_DAYS):
                 return dt, radio, label
         return None
 
     # ---------------- Booking / Monitoring ----------------
     def book_slot(self, radio, human_label: str):
         self._notify(f"🧾 Boeken: {human_label}")
-        radio.click()
+        try:
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", radio)
+        except Exception:
+            pass
+        try:
+            radio.click()
+        except StaleElementReferenceException:
+            radio = WebDriverWait(self.driver, 5).until(
+                EC.element_to_be_clickable((By.ID, radio.get_attribute("id")))
+            )
+            radio.click()
         self.wait_dom_idle()
         try:
             cb = WebDriverWait(self.driver, 10).until(
@@ -311,8 +364,15 @@ class AIBVBookingBot:
         LOG_PERIOD = 300
         next_log_at = start + LOG_PERIOD
 
+        # 1) Zorg dat filters eenmalig goed staan
         if not self.filters_initialized:
             self.ensure_filters_once()
+            try:
+                self._notify(
+                    f"🎯 Doelweek voor venster ({Config.DESIRED_BUSINESS_DAYS} werkdagen): {self._get_target_week_value()}"
+                )
+            except Exception:
+                pass
 
         while True:
             if self._stop_requested():
@@ -320,32 +380,44 @@ class AIBVBookingBot:
                 return {"success": False, "error": "Gestopt via /stop"}
 
             elapsed = time.time() - start
-            if elapsed >= 3600:
-                self._notify("⌛ Geen slot binnen 60 min")
+            if elapsed >= Config.MONITOR_MAX_SECONDS:
+                mins = Config.MONITOR_MAX_SECONDS // 60
+                self._notify(f"⌛ Geen slot binnen {mins} min")
                 return {"success": False, "error": "Geen slot gevonden"}
 
             try:
+                # Zorg dat de juiste week staat geselecteerd
                 self._ensure_week_selected()
-                found = self.find_earliest_within_3_business_days()
+
+                # Zoek het vroegste slot binnen venster
+                found = self.find_earliest_within_window()
                 if found:
                     dt, radio, label = found
-                    self._notify(f"✅ Slot gevonden: {label}")
+                    self._notify(f"✅ Slot gevonden binnen venster: {label}")
                     if Config.BOOKING_ENABLED:
                         self.book_slot(radio, label)
                         return {"success": True, "slot": label}
                     else:
                         return {"success": True, "slot": label, "booking_disabled": True}
 
+                # Geen geschikte slot → echte refresh
                 self.driver.refresh()
                 self.wait_dom_idle()
-                time.sleep(Config.REFRESH_DELAY)
+
+                # Korte pauze met stop-checks
+                for _ in range(max(1, int(Config.REFRESH_DELAY * 5))):
+                    if self._stop_requested():
+                        self._notify("⏹️ Gestopt tijdens pauze (/stop)")
+                        return {"success": False, "error": "Gestopt via /stop"}
+                    time.sleep(0.2)
 
                 if time.time() >= next_log_at:
                     next_log_at += LOG_PERIOD
-                    self._notify("⏳ Nog geen slot… blijf zoeken")
+                    self._notify("⏳ Nog geen slot binnen venster… blijf zoeken")
 
             except Exception as e:
                 log.warning(f"⚠️ Fout in monitoring: {e}")
+                # herstel met refresh; laat filters met rust
                 self.driver.refresh()
                 self.wait_dom_idle()
                 time.sleep(min(5, Config.REFRESH_DELAY * 2))
@@ -356,4 +428,3 @@ class AIBVBookingBot:
                 self.driver.quit()
         except Exception:
             pass
-

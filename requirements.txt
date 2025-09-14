@@ -1,12 +1,5 @@
-# Selenium & WebDriver
+python-telegram-bot[rate-limiter]>=21.0
 selenium==4.23.1
 webdriver-manager==4.0.2
-
-# Telegram bot
-python-telegram-bot==20.8
-
-# Helpers
 python-dotenv==1.0.1
-
-# Voor Heroku runtime
 gunicorn==21.2.0
