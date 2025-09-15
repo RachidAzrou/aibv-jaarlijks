@@ -73,7 +73,7 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(_status_line(update.effective_chat.id))
 
 
-# ------- Notifier (stuurt meldingen sequentieel en annuleerbaar) -------
+# ------- Notifier (sequentieel & annuleerbaar) -------
 def make_notifier(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> Callable[[str], None]:
     if chat_id not in notify_locks:
         notify_locks[chat_id] = asyncio.Lock()
@@ -84,7 +84,6 @@ def make_notifier(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> Callable[
         if not notify_enabled.get(chat_id, True):
             return
         async with notify_locks[chat_id]:
-            # token-check: ongeldig maken van oude sends
             if token != run_tokens.get(chat_id):
                 return
             try:
@@ -94,7 +93,6 @@ def make_notifier(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> Callable[
                 log.error("[notify] Telegram send failed: %s", e)
 
     def notify(msg: str):
-        # Gebruik PTB-application event loop
         try:
             context.application.create_task(send_async(msg))
         except Exception:
@@ -109,12 +107,12 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
     chat_id = update.effective_chat.id
 
-    # 1) direct stoppen & alle oude meldingen ongeldig maken
+    # 1) direct stoppen & oude meldingen ongeldig
     Config.STOP_FLAG = True
     notify_enabled[chat_id] = False
-    _bump_token(chat_id)  # invalideer alle nog hangende sends
+    _bump_token(chat_id)
 
-    # 2) browser hard sluiten (optioneel maar effectief)
+    # 2) browser sluiten (best effort)
     bot = active_bots.get(chat_id)
     if bot:
         try:
@@ -122,7 +120,7 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
-    # 3) taak annuleren (indien nog actief)
+    # 3) taak annuleren
     task = active_tasks.get(chat_id)
     if task and not task.done():
         task.cancel()
@@ -134,7 +132,6 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
-
     chat_id = update.effective_chat.id
 
     if not context.args:
@@ -146,7 +143,7 @@ async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     plate, first_reg_date = [x.strip() for x in raw_arg.split("|", 1)]
 
-    # Reset stop-flag + notificaties vóór nieuwe run
+    # Reset flags voor nieuwe run
     Config.STOP_FLAG = False
     notify_enabled[chat_id] = True
     _bump_token(chat_id)
@@ -166,7 +163,7 @@ async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             notify = make_notifier(context, chat_id)
             bot.set_notifier(notify)
 
-            # --- alles met Selenium in een thread ---
+            # --- Selenium in thread ---
             await asyncio.to_thread(bot.setup_driver)
 
             active_status[chat_id] = "login"
@@ -216,12 +213,24 @@ async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(chat_id=chat_id, text=f"❌ Resultaat: niet gelukt. {f'Reden: {err}' if err else ''}")
 
         except asyncio.CancelledError:
-            # nette stop
             raise
         except Exception as e:
-            log.exception("Fout in booking runner")
+            # Context meegeven zodat we snel weten wáár het is misgegaan
+            step = active_status.get(chat_id, "?")
+            url = title = ""
             try:
-                await context.bot.send_message(chat_id=chat_id, text=f"⚠️ Fout: {e}")
+                if bot and bot.driver:
+                    url = bot.driver.current_url or ""
+                    title = bot.driver.title or ""
+            except Exception:
+                pass
+
+            log.exception("Fout in booking runner (stap=%s)", step)
+            msg = f"⚠️ Fout in stap **{step}**: {e}\n"
+            if url or title:
+                msg += f"URL: {url}\nTitel: {title}"
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=msg, disable_web_page_preview=True)
             except Exception:
                 pass
         finally:
@@ -248,7 +257,7 @@ def main():
 
     app = ApplicationBuilder().token(Config.TELEGRAM_TOKEN).rate_limiter(AIORateLimiter()).build()
 
-    # (optioneel) ping bij opstart naar eerste admin-id — handig om te zien dat polling draait
+    # (optioneel) ping bij opstart naar eerste admin-id
     try:
         admin_id = int(TELEGRAM_CHAT_IDS[0])
         async def _ping(_app):
@@ -271,4 +280,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

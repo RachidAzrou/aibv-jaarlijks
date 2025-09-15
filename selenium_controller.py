@@ -153,7 +153,6 @@ class AIBVBookingBot:
     def _dismiss_cookies(self):
         d = self.driver
         candidates = [
-            # veel voorkomende knoppen/labels
             "//button[contains(., 'Akkoord')]",
             "//button[contains(., 'Accepteer')]",
             "//button[contains(., 'Accept')]",
@@ -283,22 +282,54 @@ class AIBVBookingBot:
         self._notify("🏢 Station selecteren…")
         d = self.driver
 
-        # Station
+        # Station dropdown
         try:
-            sel = WebDriverWait(d, 30).until(
+            sel_el = WebDriverWait(d, 30).until(
                 EC.presence_of_element_located((By.ID, "MainContent_ddlStations"))
             )
-            Select(sel).select_by_value(str(Config.STATION_ID))
+            sel = Select(sel_el)
         except Exception:
-            raise RuntimeError("Stationselectie mislukt — controleer STATION_ID in env.")
+            raise RuntimeError("Stationdropdown niet gevonden — pagina kan gewijzigd zijn.")
+
+        # Probeer STATION_ID eerst
+        station_value = (str(Config.STATION_ID).strip()
+                         if getattr(Config, "STATION_ID", None) is not None else "")
+        selected = False
+        if station_value:
+            try:
+                values = [o.get_attribute("value") for o in sel.options]
+                if station_value in values:
+                    sel.select_by_value(station_value)
+                    selected = True
+            except Exception:
+                selected = False
+
+        # Fallback: STATION_NAME (env) — match op zichtbare tekst
+        if not selected:
+            station_name = (os.getenv("STATION_NAME") or "").strip()
+            if station_name:
+                for opt in sel.options:
+                    if station_name.lower() in (opt.text or "").lower():
+                        opt.click()
+                        selected = True
+                        break
+
+        if not selected:
+            available = ", ".join(
+                [f"{(o.get_attribute('value') or '').strip()}:{(o.text or '').strip()}" for o in sel.options[:20]]
+            )
+            raise RuntimeError(
+                f"Stationselectie mislukt — controleer STATION_ID/STATION_NAME. "
+                f"Gezocht value='{station_value}' / name='{os.getenv('STATION_NAME')}'. "
+                f"Beschikbaar (eerste 20): {available}"
+            )
 
         # Product (bv. B-keuring)
         try:
-            sel = WebDriverWait(d, 30).until(
+            prod_el = WebDriverWait(d, 30).until(
                 EC.presence_of_element_located((By.ID, "MainContent_ddlProduct"))
             )
-            # Pas aan indien ander product nodig is
-            Select(sel).select_by_value("B")
+            Select(prod_el).select_by_value("B")  # pas aan indien ander product nodig
         except Exception:
             raise RuntimeError("Productselectie mislukt — id 'B' niet gevonden.")
 
@@ -314,7 +345,7 @@ class AIBVBookingBot:
             except Exception:
                 continue
 
-        # Wachten tot de kalender/volgende pagina is geladen (hier: we zien de 'VoertuigToevoegen' knop vaak terug)
+        # Wachten tot de volgende pagina geladen is
         WebDriverWait(d, 20).until(
             EC.presence_of_element_located((By.ID, "MainContent_btnVoertuigToevoegen"))
         )
@@ -343,12 +374,9 @@ class AIBVBookingBot:
         label = self._slot_label(cell)
         if not label:
             return None
-        # Deze helper verwacht dat je in Config een functie hebt die beslist of de slot binnen de venster-criteria valt:
-        # def is_within_n_business_days(label: str, n: int) -> bool: ...
         try:
             ok = Config.is_within_n_business_days(label, Config.DESIRED_BUSINESS_DAYS)
         except Exception:
-            # Fallback: accepteer alles
             ok = True
         if not ok:
             return None
@@ -377,7 +405,7 @@ class AIBVBookingBot:
                             self._notify(f"🎯 Gevonden binnen venster: {label} — maar BOOKING_ENABLED=false, geen bevestiging.")
                             return {"success": True, "slot": label, "booking_disabled": True}
 
-                        # Bevestigen (voorbeeld selector; pas aan als needed)
+                        # Bevestigen
                         try:
                             btn = WebDriverWait(d, 20).until(
                                 EC.element_to_be_clickable((By.XPATH, "//input[@type='submit' and contains(@value,'Bevestig')]"))
@@ -424,4 +452,3 @@ class AIBVBookingBot:
                 self.driver.quit()
         except Exception:
             pass
-
