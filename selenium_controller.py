@@ -1,4 +1,23 @@
 import os
+label = self._slot_label(cell)
+if not label:
+return None
+if not Config.is_within_n_business_days(label, Config.DESIRED_BUSINESS_DAYS):
+return None
+try:
+self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", cell)
+except Exception:
+pass
+cell.click()
+self.wait_dom_idle()
+return label
+
+
+def monitor_and_book(self):
+d = self.driver
+self._notify("🕑 Monitoren gestart…")
+
+
 while not Config.STOP_FLAG:
 try:
 # 1) Check zichtbare slots
