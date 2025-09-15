@@ -24,9 +24,16 @@ HELP = (
     "/help  – deze hulp\n"
 )
 
+# Per chat houden we de run, status en notificatie-state bij
 active_tasks: Dict[int, asyncio.Task] = {}
 active_status: Dict[int, str] = {}
-Config.STOP_FLAG = False  # globale stop-vlag
+active_bots: Dict[int, AIBVBookingBot] = {}
+notify_locks: Dict[int, asyncio.Lock] = {}
+notify_enabled: Dict[int, bool] = {}
+
+# Globale stop-vlag (gelezen door selenium_controller)
+Config.STOP_FLAG = False
+
 
 def is_authorized(update: Update) -> bool:
     return str(update.effective_chat.id) in TELEGRAM_CHAT_IDS
@@ -40,13 +47,24 @@ async def _typing(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 
 
 def make_notifier(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> Callable[[str], None]:
-    """Sync -> async bridge om meldingen vanuit selenium_controller door te sturen naar Telegram."""
+    """Sync->async bridge die meldingen ordelijk en dempbaar naar Telegram stuurt."""
+    if chat_id not in notify_locks:
+        notify_locks[chat_id] = asyncio.Lock()
+    notify_enabled[chat_id] = True  # meldingen AAN bij start run
+
     async def send_async(msg: str):
-        try:
-            await _typing(context, chat_id)
-            await context.bot.send_message(chat_id=chat_id, text=msg, disable_web_page_preview=True)
-        except Exception as e:
-            log.error(f"[notify] Telegram send failed: {e}")
+        # Kill switch: geen nieuwe meldingen als /stop is gezegd of kill aan staat
+        if not notify_enabled.get(chat_id, True) or Config.STOP_FLAG:
+            return
+        async with notify_locks[chat_id]:
+            try:
+                await _typing(context, chat_id)
+            except Exception:
+                pass
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=msg, disable_web_page_preview=True)
+            except Exception as e:
+                log.error(f"[notify] Telegram send failed: {e}")
 
     def notify(msg: str):
         asyncio.get_event_loop().create_task(send_async(msg))
@@ -84,8 +102,21 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
+    chat_id = update.effective_chat.id
+
+    # Stop-signaal én notificaties killen
     Config.STOP_FLAG = True
-    task = active_tasks.get(update.effective_chat.id)
+    notify_enabled[chat_id] = False
+
+    # Optioneel: hard-stop (browser meteen dicht)
+    bot = active_bots.get(chat_id)
+    if bot:
+        try:
+            bot.close()
+        except Exception:
+            pass
+
+    task = active_tasks.get(chat_id)
     if task and not task.done():
         await update.message.reply_text("⏹️ Stopverzoek verstuurd. De huidige actie rondt af…")
     else:
@@ -107,8 +138,9 @@ async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     plate, first_reg_date = [x.strip() for x in raw_arg.split("|", 1)]
 
-    # Reset stop-flag vóór elke nieuwe run (fix voor spook-'/stop')
+    # Reset stop-flag en notificaties vóór elke nieuwe run
     Config.STOP_FLAG = False
+    notify_enabled[chat_id] = True
 
     # Eén run tegelijk per chat
     old = active_tasks.get(chat_id)
@@ -127,6 +159,7 @@ async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             active_status[chat_id] = "🔧 Driver initialiseren"
             bot = AIBVBookingBot()
+            active_bots[chat_id] = bot
             bot.notify_func = make_notifier(context, chat_id)
             bot.setup_driver()
 
@@ -169,6 +202,7 @@ async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     bot.close()
             except Exception:
                 pass
+            active_bots.pop(chat_id, None)
             active_status[chat_id] = "idle"
 
     task = asyncio.create_task(run_flow())

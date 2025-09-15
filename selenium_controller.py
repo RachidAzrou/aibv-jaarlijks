@@ -1,7 +1,6 @@
 import os
 import time
 import logging
-import sys
 from datetime import datetime
 from typing import Optional
 
@@ -71,6 +70,9 @@ class AIBVBookingBot:
 
     # ---------------- Helpers ----------------
     def _notify(self, msg: str):
+        # Na /stop geen nieuwe meldingen meer uitsturen
+        if self._stop_requested():
+            return
         log.info(msg)
         if self.notify_func:
             try:
@@ -88,7 +90,6 @@ class AIBVBookingBot:
             try:
                 state = self.driver.execute_script("return document.readyState")
                 if state == "complete":
-                    # check of overlay weg is
                     if not self.driver.find_elements(By.XPATH, "//*[contains(., 'Even geduld')]"):
                         return True
             except Exception:
@@ -155,7 +156,6 @@ class AIBVBookingBot:
 
         self.wait_dom_idle()
 
-        # Klik "Reservatie aanmaken"
         try:
             self.click_by_id("MainContent_cmdReservatieAutokeuringAanmaken")
         except Exception:
@@ -184,7 +184,6 @@ class AIBVBookingBot:
 
     def select_vehicle(self, plate: str, first_reg_date: str):
         self._notify("🚗 Voertuig selecteren…")
-
         plate = plate.replace("-", "").replace(" ", "").upper().strip()
         self.type_by_id("MainContent_txtPlaat", plate)
         self.type_by_id("MainContent_txtDatumIndienststelling", first_reg_date)
@@ -250,7 +249,6 @@ class AIBVBookingBot:
     def _ensure_station_selected(self):
         try:
             radio = self.driver.find_element(By.ID, f"MainContent_rblStation_{Config.STATION_ID}")
-            # Gebruik JS om 'checked' te verifiëren; .is_selected() is niet altijd betrouwbaar op custom radios
             checked = self.driver.execute_script("return arguments[0].checked === true;", radio)
             if not checked:
                 try:
@@ -267,7 +265,6 @@ class AIBVBookingBot:
         try:
             return Config.get_target_window_week_value(Config.DESIRED_BUSINESS_DAYS)
         except Exception:
-            # Fallback op bestaand gedrag
             return Config.get_tomorrow_week_monday_str()
 
     def _ensure_week_selected(self):
@@ -361,7 +358,6 @@ class AIBVBookingBot:
         LOG_PERIOD = 300
         next_log_at = time.time() + LOG_PERIOD
 
-        # 1) Zorg dat filters eenmalig goed staan
         if not self.filters_initialized:
             self.ensure_filters_once()
             try:
@@ -377,10 +373,7 @@ class AIBVBookingBot:
                 return {"success": False, "error": "Gestopt via /stop"}
 
             try:
-                # Zorg dat de juiste week staat geselecteerd
                 self._ensure_week_selected()
-
-                # Zoek het vroegste slot binnen venster
                 found = self.find_earliest_within_window()
                 if found:
                     dt, radio, label = found
@@ -391,11 +384,9 @@ class AIBVBookingBot:
                     else:
                         return {"success": True, "slot": label, "booking_disabled": True}
 
-                # Geen geschikte slot → echte refresh
                 self.driver.refresh()
                 self.wait_dom_idle()
 
-                # Korte pauze met stop-checks
                 for _ in range(max(1, int(Config.REFRESH_DELAY * 5))):
                     if self._stop_requested():
                         self._notify("⏹️ Gestopt tijdens pauze (/stop)")
@@ -408,7 +399,6 @@ class AIBVBookingBot:
 
             except Exception as e:
                 log.warning(f"⚠️ Fout in monitoring: {e}")
-                # herstel met refresh; laat filters met rust
                 self.driver.refresh()
                 self.wait_dom_idle()
                 time.sleep(min(5, Config.REFRESH_DELAY * 2))
