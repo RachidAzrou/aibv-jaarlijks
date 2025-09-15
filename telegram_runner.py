@@ -24,12 +24,17 @@ HELP = (
     "/help  – deze hulp\n"
 )
 
-# Per chat houden we de run, status en notificatie-state bij
+# Per chat bijhouden
 active_tasks: Dict[int, asyncio.Task] = {}
 active_status: Dict[int, str] = {}
 active_bots: Dict[int, AIBVBookingBot] = {}
 notify_locks: Dict[int, asyncio.Lock] = {}
 notify_enabled: Dict[int, bool] = {}
+run_tokens: Dict[int, int] = {}  # per chat: huidige run-token
+
+def _bump_token(chat_id: int) -> int:
+    run_tokens[chat_id] = run_tokens.get(chat_id, 0) + 1
+    return run_tokens[chat_id]
 
 # Globale stop-vlag (gelezen door selenium_controller)
 Config.STOP_FLAG = False
@@ -46,15 +51,17 @@ async def _typing(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         pass
 
 
-def make_notifier(context: ContextTypes.DEFAULT_TYPE, chat_id: int) -> Callable[[str], None]:
-    """Sync->async bridge die meldingen ordelijk en dempbaar naar Telegram stuurt."""
+def make_notifier(context: ContextTypes.DEFAULT_TYPE, chat_id: int, token: int) -> Callable[[str], None]:
+    """Sync->async bridge: ordelijke, dempbare en token-gevalideerde Telegram-notificaties."""
     if chat_id not in notify_locks:
         notify_locks[chat_id] = asyncio.Lock()
-    notify_enabled[chat_id] = True  # meldingen AAN bij start run
+    notify_enabled[chat_id] = True  # meldingen aan bij start
 
     async def send_async(msg: str):
-        # Kill switch: geen nieuwe meldingen als /stop is gezegd of kill aan staat
+        # Kill switch + token-check: drop meldingen van oude runs
         if not notify_enabled.get(chat_id, True) or Config.STOP_FLAG:
+            return
+        if run_tokens.get(chat_id) != token:
             return
         async with notify_locks[chat_id]:
             try:
@@ -99,16 +106,30 @@ async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def _send_error_after_draining(context: ContextTypes.DEFAULT_TYPE, chat_id: int, text: str):
+    """Dempt notifier, wacht tot lopende meldingen klaar zijn, en stuurt dan één nette fout."""
+    notify_enabled[chat_id] = False
+    lock = notify_locks.get(chat_id)
+    if lock:
+        try:
+            async with lock:
+                pass
+        except Exception:
+            pass
+    await context.bot.send_message(chat_id=chat_id, text=text, disable_web_page_preview=True)
+
+
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_authorized(update):
         return await update.message.reply_text("🚫 Geen toegang tot deze bot.")
     chat_id = update.effective_chat.id
 
-    # Stop-signaal én notificaties killen
+    # 1) direct stoppen & alle oude meldingen ongeldig maken
     Config.STOP_FLAG = True
     notify_enabled[chat_id] = False
+    _bump_token(chat_id)  # 👉 invalideer alle nog hangende sends van vorige run
 
-    # Optioneel: hard-stop (browser meteen dicht)
+    # 2) browser hard sluiten (optioneel maar effectief)
     bot = active_bots.get(chat_id)
     if bot:
         try:
@@ -116,7 +137,20 @@ async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception:
             pass
 
+    # 3) taak cancelen
     task = active_tasks.get(chat_id)
+    if task and not task.done():
+        task.cancel()
+
+    # 4) lopende notifies laten uitlopen en dan antwoorden
+    lock = notify_locks.get(chat_id)
+    if lock:
+        try:
+            async with lock:
+                pass
+        except Exception:
+            pass
+
     if task and not task.done():
         await update.message.reply_text("⏹️ Stopverzoek verstuurd. De huidige actie rondt af…")
     else:
@@ -138,9 +172,10 @@ async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     plate, first_reg_date = [x.strip() for x in raw_arg.split("|", 1)]
 
-    # Reset stop-flag en notificaties vóór elke nieuwe run
+    # Reset stop-flag + notificaties vóór nieuwe run
     Config.STOP_FLAG = False
     notify_enabled[chat_id] = True
+    token = _bump_token(chat_id)  # NIEUW: nieuwe run, nieuw token
 
     # Eén run tegelijk per chat
     old = active_tasks.get(chat_id)
@@ -160,17 +195,29 @@ async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             active_status[chat_id] = "🔧 Driver initialiseren"
             bot = AIBVBookingBot()
             active_bots[chat_id] = bot
-            bot.notify_func = make_notifier(context, chat_id)
+            bot.notify_func = make_notifier(context, chat_id, token)
             bot.setup_driver()
 
             active_status[chat_id] = "🔐 Inloggen"
+            if Config.STOP_FLAG: return
             bot.login()
 
             active_status[chat_id] = "🚗 Voertuig"
+            if Config.STOP_FLAG: return
             bot.select_vehicle(plate, first_reg_date)
 
             active_status[chat_id] = "📍 Station"
-            bot.select_station()
+            if Config.STOP_FLAG: return
+            # Dit kan RuntimeError gooien bij site-fout (bv. dubbele reservatie)
+            try:
+                bot.select_station()
+            except RuntimeError as e:
+                await _send_error_after_draining(
+                    context,
+                    chat_id,
+                    f"❌ Kan niet verder: {e}\n(Er is waarschijnlijk al een reservatie voor dit voertuig.)"
+                )
+                return
 
             active_status[chat_id] = "🕑 Monitoren"
             await context.bot.send_message(
@@ -192,9 +239,12 @@ async def book_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 err = (result or {}).get("error") if isinstance(result, dict) else None
                 await context.bot.send_message(chat_id=chat_id, text=f"❌ Resultaat: niet gelukt. {f'Reden: {err}' if err else ''}")
 
+        except asyncio.CancelledError:
+            # nette stop, geen extra fout sturen
+            raise
         except Exception as e:
             log.exception("Fout in booking runner")
-            await context.bot.send_message(chat_id=chat_id, text=f"⚠️ Fout: {e}")
+            await _send_error_after_draining(context, chat_id, f"⚠️ Fout: {e}")
         finally:
             active_status[chat_id] = "opruimen"
             try:

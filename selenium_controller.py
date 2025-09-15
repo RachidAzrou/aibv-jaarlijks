@@ -130,6 +130,99 @@ class AIBVBookingBot:
             pass
         return el
 
+    # ---------------- Robuuste foutdetectie (stap 3) ----------------
+    ERROR_XPATHS = [
+        "//*[@id='MainContent_ErrorLabel']",
+        "//*[@id='MainContent_pnlErrorMessage']//span",
+        "//*[contains(@id,'Error') and not(self::script)][not(self::style)]",
+        "//*[contains(@class,'error') and not(self::script)][not(self::style)]",
+        "//*[contains(normalize-space(.), 'Een dubbele reservatie')]",
+        "//*[contains(normalize-space(.), 'dubbele reservatie')]",
+        "//*[contains(normalize-space(.), 'reeds een reservatie')]",
+        "//*[contains(normalize-space(.), 'niet toegestaan')]",
+    ]
+    ERROR_TEXT_PROBES = [
+        "een dubbele reservatie",
+        "dubbele reservatie",
+        "reeds een reservatie",
+        "niet toegestaan",
+    ]
+
+    def _find_error_element(self) -> Optional[str]:
+        """Zoek een zichtbaar foutlabel/element en geef de tekst terug."""
+        for xp in self.ERROR_XPATHS:
+            try:
+                el = self.driver.find_element(By.XPATH, xp)
+                if el and el.is_displayed():
+                    txt = (el.text or "").strip()
+                    if txt:
+                        return txt
+            except NoSuchElementException:
+                continue
+            except Exception:
+                continue
+        return None
+
+    def _scan_page_visible_text_for_error(self) -> Optional[str]:
+        """Fallback: gebruik body.innerText (zichtbare tekst) voor detectie."""
+        try:
+            inner = self.driver.execute_script("return document.body ? document.body.innerText : ''") or ""
+            low = inner.lower()
+            for probe in self.ERROR_TEXT_PROBES:
+                if probe in low:
+                    return "Een dubbele reservatie voor dit voertuig is niet toegestaan. Er is reeds een reservatie voorzien."
+        except Exception:
+            pass
+        return None
+
+    def _scan_page_source_for_error(self) -> Optional[str]:
+        """Extra fallback: scan de raw page source op bekende foutzinnen."""
+        try:
+            src = (self.driver.page_source or "").lower()
+            for probe in self.ERROR_TEXT_PROBES:
+                if probe in src:
+                    return "Er is reeds een reservatie voorzien (gedetecteerd in broncode)."
+        except Exception:
+            pass
+        return None
+
+    def _read_error_text(self) -> Optional[str]:
+        return (
+            self._find_error_element()
+            or self._scan_page_visible_text_for_error()
+            or self._scan_page_source_for_error()
+        )
+
+    def _fail_if_error(self):
+        err = self._read_error_text()
+        if err:
+            self._notify(f"⚠️ Fout op site: {err}")
+            raise RuntimeError(err)
+
+    def _wait_week_or_error(self, timeout=12):
+        """
+        Wacht tot óf de week-dropdown verschijnt óf de foutbanner/tekst.
+        Raise RuntimeError bij fout, TimeoutException bij geen van beiden.
+        """
+        end = time.time() + timeout
+        while time.time() < end:
+            # 1) fout?
+            err = self._read_error_text()
+            if err:
+                self._notify(f"⚠️ Fout op site: {err}")
+                raise RuntimeError(err)
+            # 2) dropdown?
+            try:
+                el = self.driver.find_element(By.ID, "MainContent_lbSelectWeek")
+                if el and el.is_displayed():
+                    return True
+            except NoSuchElementException:
+                pass
+            time.sleep(0.2)
+        # laatste check op fout
+        self._fail_if_error()
+        raise TimeoutException("Week-dropdown verscheen niet binnen timeout")
+
     # ---------------- Flow ----------------
     def login(self):
         d = self.driver
@@ -208,15 +301,20 @@ class AIBVBookingBot:
         radio.click()
         self.click_by_id("MainContent_btnBevestig")
         self._notify("✅ Voertuig en keuringstype bevestigd.")
+        # Direct checken op foutpaneel/tekst (bv. dubbele reservatie)
+        self._fail_if_error()
         return True
 
     def select_station(self):
         self._notify("🏢 Station selecteren…")
+        # Een foutpaneel/tekst kan al zichtbaar zijn bij binnenkomst
+        self._fail_if_error()
+
+        # Klik station en wacht expliciet op óf week-dropdown óf fout
         self.click_by_id(f"MainContent_rblStation_{Config.STATION_ID}")
-        WebDriverWait(self.driver, 10).until(
-            EC.presence_of_element_located((By.ID, "MainContent_lbSelectWeek"))
-        )
+        self._wait_week_or_error(timeout=12)
         self.wait_dom_idle()
+
         self.filters_initialized = True
         self._notify("✅ Station geselecteerd.")
         return True
@@ -276,9 +374,8 @@ class AIBVBookingBot:
 
     def ensure_filters_once(self):
         try:
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.ID, "MainContent_lbSelectWeek"))
-            )
+            # Wacht op week of fout
+            self._wait_week_or_error(timeout=12)
             ok_station = self._ensure_station_selected()
             ok_week = self._ensure_week_selected()
             if ok_station and ok_week:
@@ -373,6 +470,12 @@ class AIBVBookingBot:
                 return {"success": False, "error": "Gestopt via /stop"}
 
             try:
+                # Veiligheid: als site op enig moment een foutpaneel/tekst toont, stop
+                err = self._read_error_text()
+                if err:
+                    self._notify(f"⚠️ Afgebroken: {err}")
+                    return {"success": False, "error": err}
+
                 self._ensure_week_selected()
                 found = self.find_earliest_within_window()
                 if found:
